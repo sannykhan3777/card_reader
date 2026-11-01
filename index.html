@@ -12,7 +12,7 @@
 <link rel="icon" href="icon-192.png">
 <title>Card Scanner</title>
 <script src="https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/xlsx@0.18.5/dist/xlsx.full.min.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"></script>
 <style>
 :root{--bg:#f6f4ef;--surface:#fff;--text:#1d1d1b;--muted:#6b6a65;--line:#e2dfd6;--accent:#0f6b4f;--on-accent:#fff;--danger:#b3261e;color-scheme:light}
 @media (prefers-color-scheme:dark){:root{--bg:#141413;--surface:#1f1f1d;--text:#f0eee8;--muted:#9c9a92;--line:#33322e;--accent:#4cc596;--on-accent:#0b1f17;--danger:#f2b8b5;color-scheme:dark}}
@@ -34,6 +34,13 @@ label{display:block;font-size:.8rem;color:var(--muted);margin-bottom:3px}
 input[type=text],input[type=email],input[type=tel]{width:100%;padding:9px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-size:1rem}
 #status{margin-top:10px;font-size:.9rem;color:var(--muted);min-height:1.2em}
 #status.err{color:var(--danger)}
+textarea{width:100%;min-height:84px;padding:9px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-size:1rem;font-family:inherit;resize:vertical}
+.lblrow{display:flex;justify-content:space-between;align-items:center}
+.mini{appearance:none;border:1px solid var(--line);background:var(--surface);color:var(--accent);border-radius:8px;font-size:.78rem;padding:3px 8px;cursor:pointer;margin-bottom:3px}
+.thumb{width:72px;height:auto;border-radius:6px;border:1px solid var(--line);cursor:pointer;display:block}
+td.ml{white-space:pre-line;min-width:170px;vertical-align:top}
+#modal{display:none;position:fixed;inset:0;background:rgba(0,0,0,.85);z-index:9;align-items:center;justify-content:center;padding:16px}
+#modal img{max-width:100%;max-height:100%;border-radius:10px}
 progress{width:100%;height:6px;margin-top:8px;display:none}
 details{margin-top:10px;font-size:.85rem;color:var(--muted)}
 pre{white-space:pre-wrap;direction:auto;margin:6px 0 0}
@@ -56,7 +63,8 @@ td button{background:none;border:none;color:var(--danger);cursor:pointer;font-si
       <input id="file" type="file" accept="image/*" capture="environment" hidden>
       <button class="btn" id="scan" disabled>Read card</button>
     </div>
-    <img id="preview" alt="Business card preview">
+    <label style="margin-top:12px">Card</label>
+    <img id="preview" alt="Business card preview" style="margin-top:0">
     <progress id="prog" max="1" value="0"></progress>
     <div id="status"></div>
     <details id="rawbox"><summary>Show raw text</summary><pre id="raw"></pre></details>
@@ -71,6 +79,9 @@ td button{background:none;border:none;color:var(--danger);cursor:pointer;font-si
       <div><label for="f_phone">Phone</label><input type="tel" id="f_phone" dir="ltr"></div>
       <div><label for="f_website">Website</label><input type="text" id="f_website" dir="ltr"></div>
       <div class="full"><label for="f_address">Address</label><input type="text" id="f_address" dir="auto"></div>
+      <div class="full"><label for="f_remarks">Remarks</label><textarea id="f_remarks" dir="auto" placeholder="Where you met, what was discussed…"></textarea></div>
+      <div class="full"><label for="f_actions">Action points</label><textarea id="f_actions" dir="auto" placeholder="1. …"></textarea></div>
+      <div class="full"><div class="lblrow"><label for="f_status">Status (Pending / Done for each point)</label><button type="button" class="mini" id="fillstatus">Fill from action points</button></div><textarea id="f_status" dir="auto" placeholder="1. Pending"></textarea></div>
     </div>
     <div class="row" style="margin-top:12px">
       <button class="btn primary" id="add">Add to list</button>
@@ -86,18 +97,33 @@ td button{background:none;border:none;color:var(--danger);cursor:pointer;font-si
     <div class="tablewrap" id="tablewrap"></div>
   </section>
 </main>
+<div id="modal"><img id="modalimg" alt="Card"></div>
 
 <script>
-const FIELDS=["name","name_ar","title","company","company_ar","email","phone","website","address"];
-const LABELS={name:"Name",name_ar:"Name (Arabic)",title:"Job title",company:"Company",company_ar:"Company (Arabic)",email:"Email",phone:"Phone",website:"Website",address:"Address"};
+const OCR_FIELDS=["name","name_ar","title","company","company_ar","email","phone","website","address"];
+const FIELDS=OCR_FIELDS.concat(["remarks","actions","status"]);
+const MULTI=["remarks","actions","status"];
+const LABELS={name:"Name",name_ar:"Name (Arabic)",title:"Job title",company:"Company",company_ar:"Company (Arabic)",email:"Email",phone:"Phone",website:"Website",address:"Address",remarks:"Remarks",actions:"Action Points",status:"Status",card:"Card"};
 const $=id=>document.getElementById(id);
-let rows=[],imgBlob=null,worker=null;
+let rows=[],imgBlob=null,worker=null,cardThumb=null,cardRatio=0.6;
 try{rows=JSON.parse(localStorage.getItem("cards")||"[]")||[];}catch(e){rows=[];}
-const persist=()=>{try{localStorage.setItem("cards",JSON.stringify(rows));}catch(e){}};
+const persist=()=>{try{localStorage.setItem("cards",JSON.stringify(rows));return true;}catch(e){return false;}};
 function status(t,err){const s=$("status");s.textContent=t||"";s.className=err?"err":"";}
 
 if("serviceWorker" in navigator)window.addEventListener("load",()=>navigator.serviceWorker.register("sw.js").catch(()=>{}));
 
+function thumb(file,max=700){
+  return new Promise((res,rej)=>{
+    const img=new Image(),url=URL.createObjectURL(file);
+    img.onload=()=>{
+      const k=Math.min(1,max/Math.max(img.width,img.height));
+      const c=document.createElement("canvas");c.width=Math.round(img.width*k);c.height=Math.round(img.height*k);
+      c.getContext("2d").drawImage(img,0,0,c.width,c.height);
+      res({url:c.toDataURL("image/jpeg",0.7),ratio:c.height/c.width});URL.revokeObjectURL(url);
+    };
+    img.onerror=rej;img.src=url;
+  });
+}
 /* ---------- image prep: scale + grayscale + contrast ---------- */
 function prep(file){
   return new Promise((res,rej)=>{
@@ -114,7 +140,7 @@ function prep(file){
 }
 $("file").addEventListener("change",async e=>{
   const f=e.target.files[0];if(!f)return;
-  try{imgBlob=await prep(f);const p=$("preview");p.src=URL.createObjectURL(imgBlob);p.style.display="block";$("scan").disabled=false;status("Photo ready. Tap “Read card”.");}
+  try{imgBlob=await prep(f);const t=await thumb(f);cardThumb=t.url;cardRatio=t.ratio;const p=$("preview");p.src=cardThumb;p.style.display="block";$("scan").disabled=false;status("Photo ready. Tap “Read card”.");}
   catch(err){status("Couldn’t load that image.",true);}
 });
 
@@ -184,28 +210,50 @@ function parse(raw){
   if(!out.company_ar){const c=left.find(l=>AR.test(l)&&l!==out.name_ar);if(c)out.company_ar=c;}
   return out;
 }
-function fill(o){FIELDS.forEach(k=>{$("f_"+k).value=o[k]||"";});}
+function fill(o){OCR_FIELDS.forEach(k=>{$("f_"+k).value=o[k]||"";});}
+
+/* ---------- numbered points ---------- */
+const emptyNum=l=>/^\s*\d+\.?\s*$/.test(l);
+function cleanPoints(v){return v.split("\n").filter(l=>l.trim()&&!emptyNum(l)).join("\n");}
+["f_actions","f_status"].forEach(id=>{
+  const el=$(id);
+  el.addEventListener("focus",()=>{if(!el.value.trim())el.value="1. ";});
+  el.addEventListener("keydown",e=>{
+    if(e.key!=="Enter")return;e.preventDefault();
+    const kept=cleanPoints(el.value);const n=kept?kept.split("\n").length+1:1;
+    el.value=(kept?kept+"\n":"")+n+". ";el.setSelectionRange(el.value.length,el.value.length);
+  });
+});
+$("fillstatus").onclick=()=>{
+  const pts=cleanPoints($("f_actions").value).split("\n").filter(Boolean);
+  if(!pts.length){status("Write the action points first.",true);return;}
+  const old=cleanPoints($("f_status").value).split("\n");
+  $("f_status").value=pts.map((_,i)=>{const o=old[i];return o&&o.trim()?o:(i+1)+". Pending";}).join("\n");
+  status("Edit each line to Pending or Done.");
+};
 
 /* ---------- list + export ---------- */
-function readForm(){const o={};FIELDS.forEach(k=>o[k]=$("f_"+k).value.trim());return o;}
-function clearForm(){FIELDS.forEach(k=>$("f_"+k).value="");$("preview").style.display="none";$("file").value="";imgBlob=null;$("scan").disabled=true;$("raw").textContent="";status("");}
+function readForm(){const o={};FIELDS.forEach(k=>o[k]=MULTI.includes(k)?cleanPoints($("f_"+k).value).trim():$("f_"+k).value.trim());o.card=cardThumb||"";o.ratio=cardRatio;return o;}
+function clearForm(){FIELDS.forEach(k=>$("f_"+k).value="");$("preview").style.display="none";$("file").value="";imgBlob=null;cardThumb=null;$("scan").disabled=true;$("raw").textContent="";status("");}
 $("clearform").onclick=clearForm;
 $("add").onclick=()=>{
   const o=readForm();
-  if(!FIELDS.some(k=>o[k])){status("Nothing to add yet.",true);return;}
-  rows.push(o);persist();render();clearForm();status("Added.");
+  if(!FIELDS.some(k=>o[k])&&!o.card){status("Nothing to add yet.",true);return;}
+  rows.push(o);if(!persist())status("Added, but phone storage is full. Download Excel now.",true);else status("Added.");render();clearForm();
 };
 function render(){
   $("count").textContent="Saved cards ("+rows.length+")";$("export").disabled=!rows.length;
   const w=$("tablewrap");w.textContent="";
   if(!rows.length){const d=document.createElement("div");d.className="empty";d.textContent="No cards yet.";w.appendChild(d);return;}
   const t=document.createElement("table"),h=t.createTHead().insertRow();
-  FIELDS.forEach(k=>{const th=document.createElement("th");th.textContent=LABELS[k];h.appendChild(th);});
+  FIELDS.concat(["card"]).forEach(k=>{const th=document.createElement("th");th.textContent=LABELS[k];h.appendChild(th);});
   h.appendChild(document.createElement("th"));
   const tb=t.createTBody();
   rows.forEach((r,i)=>{
     const tr=tb.insertRow();
-    FIELDS.forEach(k=>{const c=tr.insertCell();c.textContent=r[k]||"";c.dir="auto";});
+    FIELDS.forEach(k=>{const c=tr.insertCell();c.textContent=r[k]||"";c.dir="auto";if(MULTI.includes(k))c.className="ml";});
+    const cc=tr.insertCell();
+    if(r.card){const im=document.createElement("img");im.src=r.card;im.className="thumb";im.alt="Card";im.onclick=()=>{$("modalimg").src=r.card;$("modal").style.display="flex";};cc.appendChild(im);}
     const b=document.createElement("button");b.textContent="✕";b.setAttribute("aria-label","Remove card");
     b.onclick=()=>{rows.splice(i,1);persist();render();};
     tr.insertCell().appendChild(b);
@@ -213,17 +261,34 @@ function render(){
   w.appendChild(t);
 }
 $("export").onclick=async()=>{
-  const aoa=[FIELDS.map(k=>LABELS[k])].concat(rows.map(r=>FIELDS.map(k=>r[k]||"")));
-  const ws=XLSX.utils.aoa_to_sheet(aoa);ws["!cols"]=FIELDS.map(()=>({wch:24}));
-  const wb=XLSX.utils.book_new();XLSX.utils.book_append_sheet(wb,ws,"Contacts");
-  const buf=XLSX.write(wb,{bookType:"xlsx",type:"array"});
-  const file=new File([buf],"business-cards.xlsx",{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
   try{
-    if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file],title:"Business cards"});return;}
-  }catch(e){if(e&&e.name==="AbortError")return;}
-  const a=document.createElement("a");a.href=URL.createObjectURL(file);a.download=file.name;
-  document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+    const wb=new ExcelJS.Workbook();
+    const ws=wb.addWorksheet("Contacts",{views:[{state:"frozen",ySplit:1}]});
+    const wide={remarks:36,actions:36,status:24,address:30};
+    ws.columns=FIELDS.map(k=>({header:LABELS[k],key:k,width:wide[k]||24})).concat([{header:"Card",key:"card_img",width:34}]);
+    ws.getRow(1).font={bold:true};
+    rows.forEach(r=>{
+      const row=ws.addRow(FIELDS.map(k=>r[k]||""));
+      row.alignment={wrapText:true,vertical:"top"};
+      let h=30;
+      if(r.card){
+        const w=210,ht=Math.min(150,Math.round(w*(r.ratio||0.6)));
+        const id=wb.addImage({base64:r.card,extension:"jpeg"});
+        ws.addImage(id,{tl:{col:FIELDS.length+0.05,row:row.number-1+0.05},ext:{width:w,height:ht}});
+        h=Math.max(h,Math.round(ht*0.75)+8);
+      }
+      const lines=Math.max(...MULTI.map(k=>(r[k]||"").split("\n").length));
+      row.height=Math.max(h,lines*16);
+    });
+    const buf=await wb.xlsx.writeBuffer();
+    const file=new File([buf],"business-cards.xlsx",{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+    try{if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file],title:"Business cards"});return;}}
+    catch(e){if(e&&e.name==="AbortError")return;}
+    const a=document.createElement("a");a.href=URL.createObjectURL(file);a.download=file.name;
+    document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),4000);
+  }catch(e){status("Couldn’t create the Excel file. Check your internet connection and try again.",true);}
 };
+$("modal").onclick=()=>{$("modal").style.display="none";};
 render();
 </script>
 </body>
