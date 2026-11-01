@@ -31,7 +31,7 @@ h1{font-size:1.5rem;margin:0 0 4px}
 @media (max-width:520px){.grid{grid-template-columns:1fr}}
 .full{grid-column:1/-1}
 label{display:block;font-size:.8rem;color:var(--muted);margin-bottom:3px}
-input[type=text],input[type=email],input[type=tel]{width:100%;padding:9px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-size:1rem}
+input[type=text],input[type=email],input[type=tel],input[type=date]{width:100%;padding:9px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-size:1rem}
 #status{margin-top:10px;font-size:.9rem;color:var(--muted);min-height:1.2em}
 #status.err{color:var(--danger)}
 textarea{width:100%;min-height:84px;padding:9px 10px;border-radius:8px;border:1px solid var(--line);background:var(--bg);color:var(--text);font-size:1rem;font-family:inherit;resize:vertical}
@@ -70,6 +70,7 @@ td button{background:none;border:none;color:var(--danger);cursor:pointer;font-si
     <details id="rawbox"><summary>Show raw text</summary><pre id="raw"></pre></details>
 
     <div class="grid">
+      <div class="full"><label for="f_date">Date</label><input type="date" id="f_date" dir="ltr"></div>
       <div><label for="f_name">Name</label><input type="text" id="f_name" dir="auto"></div>
       <div><label for="f_name_ar">Name (Arabic)</label><input type="text" id="f_name_ar" dir="auto"></div>
       <div><label for="f_title">Job title</label><input type="text" id="f_title" dir="auto"></div>
@@ -92,7 +93,7 @@ td button{background:none;border:none;color:var(--danger);cursor:pointer;font-si
   <section class="card">
     <div class="row" style="justify-content:space-between;margin-bottom:8px">
       <strong id="count">Saved cards (0)</strong>
-      <button class="btn primary" id="export" disabled>Download Excel</button>
+      <div class="row"><select id="monthsel" class="btn" aria-label="Month"></select><button class="btn primary" id="export" disabled>Download Excel</button></div>
     </div>
     <div class="tablewrap" id="tablewrap"></div>
   </section>
@@ -101,12 +102,16 @@ td button{background:none;border:none;color:var(--danger);cursor:pointer;font-si
 
 <script>
 const OCR_FIELDS=["name","name_ar","title","company","company_ar","email","phone","website","address"];
-const FIELDS=OCR_FIELDS.concat(["remarks","actions","status"]);
+const FIELDS=["date"].concat(OCR_FIELDS,["remarks","actions","status"]);
 const MULTI=["remarks","actions","status"];
-const LABELS={name:"Name",name_ar:"Name (Arabic)",title:"Job title",company:"Company",company_ar:"Company (Arabic)",email:"Email",phone:"Phone",website:"Website",address:"Address",remarks:"Remarks",actions:"Action Points",status:"Status",card:"Card"};
+const LABELS={date:"Date",name:"Name",name_ar:"Name (Arabic)",title:"Job title",company:"Company",company_ar:"Company (Arabic)",email:"Email",phone:"Phone",website:"Website",address:"Address",remarks:"Remarks",actions:"Action Points",status:"Status",card:"Card"};
 const $=id=>document.getElementById(id);
 let rows=[],imgBlob=null,worker=null,cardThumb=null,cardRatio=0.6;
+const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+const MONFULL=["January","February","March","April","May","June","July","August","September","October","November","December"];
+const todayISO=()=>{const d=new Date();return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");};
 try{rows=JSON.parse(localStorage.getItem("cards")||"[]")||[];}catch(e){rows=[];}
+rows.forEach(r=>{if(!r.date)r.date=todayISO();});
 const persist=()=>{try{localStorage.setItem("cards",JSON.stringify(rows));return true;}catch(e){return false;}};
 function status(t,err){const s=$("status");s.textContent=t||"";s.className=err?"err":"";}
 
@@ -233,16 +238,16 @@ $("fillstatus").onclick=()=>{
 };
 
 /* ---------- list + export ---------- */
-function readForm(){const o={};FIELDS.forEach(k=>o[k]=MULTI.includes(k)?cleanPoints($("f_"+k).value).trim():$("f_"+k).value.trim());o.card=cardThumb||"";o.ratio=cardRatio;return o;}
-function clearForm(){FIELDS.forEach(k=>$("f_"+k).value="");$("preview").style.display="none";$("file").value="";imgBlob=null;cardThumb=null;$("scan").disabled=true;$("raw").textContent="";status("");}
+function readForm(){const o={};FIELDS.forEach(k=>o[k]=MULTI.includes(k)?cleanPoints($("f_"+k).value).trim():$("f_"+k).value.trim());if(!o.date)o.date=todayISO();o.card=cardThumb||"";o.ratio=cardRatio;return o;}
+function clearForm(){FIELDS.forEach(k=>{if(k!=="date")$("f_"+k).value="";});resetDate();$("preview").style.display="none";$("file").value="";imgBlob=null;cardThumb=null;$("scan").disabled=true;$("raw").textContent="";status("");}
 $("clearform").onclick=clearForm;
 $("add").onclick=()=>{
   const o=readForm();
-  if(!FIELDS.some(k=>o[k])&&!o.card){status("Nothing to add yet.",true);return;}
+  if(!FIELDS.some(k=>k!=="date"&&o[k])&&!o.card){status("Nothing to add yet.",true);return;}
   rows.push(o);if(!persist())status("Added, but phone storage is full. Download Excel now.",true);else status("Added.");render();clearForm();
 };
 function render(){
-  $("count").textContent="Saved cards ("+rows.length+")";$("export").disabled=!rows.length;
+  $("count").textContent="Saved cards ("+rows.length+")";$("export").disabled=!rows.length;fillMonths();
   const w=$("tablewrap");w.textContent="";
   if(!rows.length){const d=document.createElement("div");d.className="empty";d.textContent="No cards yet.";w.appendChild(d);return;}
   const t=document.createElement("table"),h=t.createTHead().insertRow();
@@ -260,34 +265,53 @@ function render(){
   });
   w.appendChild(t);
 }
+function fillMonths(){
+  const sel=$("monthsel"),prev=sel.value;sel.textContent="";
+  const cnt={};rows.forEach(r=>{const k=(r.date||todayISO()).slice(0,7);cnt[k]=(cnt[k]||0)+1;});
+  Object.keys(cnt).sort().reverse().forEach(k=>{const [y,m]=k.split("-").map(Number);const o=document.createElement("option");o.value=k;o.textContent=MONFULL[m-1]+" "+y+" ("+cnt[k]+")";sel.appendChild(o);});
+  if(prev&&cnt[prev])sel.value=prev;
+}
 $("export").onclick=async()=>{
+  const key=$("monthsel").value;if(!key)return;
   try{
+    const [y,m]=key.split("-").map(Number);
+    const monthRows=rows.filter(r=>(r.date||"").slice(0,7)===key);
+    const days=[...new Set(monthRows.map(r=>r.date))].sort();
     const wb=new ExcelJS.Workbook();
-    const ws=wb.addWorksheet("Contacts",{views:[{state:"frozen",ySplit:1}]});
-    const wide={remarks:36,actions:36,status:24,address:30};
-    ws.columns=FIELDS.map(k=>({header:LABELS[k],key:k,width:wide[k]||24})).concat([{header:"Card",key:"card_img",width:34}]);
-    ws.getRow(1).font={bold:true};
-    rows.forEach(r=>{
-      const row=ws.addRow(FIELDS.map(k=>r[k]||""));
-      row.alignment={wrapText:true,vertical:"top"};
-      let h=30;
-      if(r.card){
-        const w=210,ht=Math.min(150,Math.round(w*(r.ratio||0.6)));
-        const id=wb.addImage({base64:r.card,extension:"jpeg"});
-        ws.addImage(id,{tl:{col:FIELDS.length+0.05,row:row.number-1+0.05},ext:{width:w,height:ht}});
-        h=Math.max(h,Math.round(ht*0.75)+8);
-      }
-      const lines=Math.max(...MULTI.map(k=>(r[k]||"").split("\n").length));
-      row.height=Math.max(h,lines*16);
-    });
+    const wide={remarks:36,actions:36,status:24,address:30,date:14};
+    for(const day of days){
+      const d=Number(day.slice(8,10));
+      const ws=wb.addWorksheet(d+"-"+MON[m-1],{views:[{state:"frozen",ySplit:1}]});
+      ws.columns=FIELDS.map(k=>({header:LABELS[k],key:k,width:wide[k]||24})).concat([{header:"Card",key:"card_img",width:34}]);
+      ws.getRow(1).font={bold:true};
+      monthRows.filter(r=>r.date===day).forEach(r=>{
+        const dateTxt=String(d).padStart(2,"0")+"-"+MON[m-1]+"-"+y;
+        const row=ws.addRow(FIELDS.map(k=>k==="date"?dateTxt:(r[k]||"")));
+        row.alignment={wrapText:true,vertical:"top"};
+        let h=30;
+        if(r.card){
+          const w=210,ht=Math.min(150,Math.round(w*(r.ratio||0.6)));
+          const id=wb.addImage({base64:r.card,extension:"jpeg"});
+          ws.addImage(id,{tl:{col:FIELDS.length,row:row.number-1},ext:{width:w,height:ht},editAs:"oneCell"});
+          h=Math.max(h,Math.round(ht*0.75)+8);
+        }
+        const lines=Math.max(...MULTI.map(k=>(r[k]||"").split("\n").length));
+        row.height=Math.max(h,lines*16);
+      });
+    }
     const buf=await wb.xlsx.writeBuffer();
-    const file=new File([buf],"business-cards.xlsx",{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
+    const file=new File([buf],"Business Cards - "+MONFULL[m-1]+" "+y+".xlsx",{type:"application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"});
     try{if(navigator.canShare&&navigator.canShare({files:[file]})){await navigator.share({files:[file],title:"Business cards"});return;}}
     catch(e){if(e&&e.name==="AbortError")return;}
     const a=document.createElement("a");a.href=URL.createObjectURL(file);a.download=file.name;
     document.body.appendChild(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(a.href),4000);
   }catch(e){status("Couldn’t create the Excel file. Check your internet connection and try again.",true);}
 };
+let dateTouched=false;
+function resetDate(){if(!dateTouched)$("f_date").value=todayISO();}
+$("f_date").value=todayISO();
+$("f_date").addEventListener("change",()=>{dateTouched=true;if(!$("f_date").value)dateTouched=false,resetDate();});
+document.addEventListener("visibilitychange",()=>{if(!document.hidden)resetDate();});
 $("modal").onclick=()=>{$("modal").style.display="none";};
 render();
 </script>

@@ -1,4 +1,4 @@
-const V="cards-v2";
+const V="cards-v3";
 const SHELL=["./","./index.html","./manifest.json","./icon-192.png","./icon-512.png",
 "https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js",
 "https://cdn.jsdelivr.net/npm/exceljs@4.4.0/dist/exceljs.min.js"];
